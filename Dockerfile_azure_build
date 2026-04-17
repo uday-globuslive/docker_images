@@ -16,22 +16,23 @@ LABEL description="Azure DevOps build container with Java 21, Maven, Docker CLI,
 # Avoid prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install dependencies and tools
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Basic utilities
-    curl \
-    wget \
-    gnupg \
-    lsb-release \
-    ca-certificates \
-    software-properties-common \
-    apt-transport-https \
-    git \
-    jq \
-    unzip \
-    zip \
-    # Build tools
-    build-essential \
+# Fix potential apt repository issues and install dependencies
+RUN rm -rf /var/lib/apt/lists/* \
+    && apt-get clean \
+    && apt-get update --fix-missing \
+    && apt-get install -y --no-install-recommends \
+       ca-certificates \
+       curl \
+       wget \
+       gnupg \
+       lsb-release \
+       software-properties-common \
+       apt-transport-https \
+       git \
+       jq \
+       unzip \
+       zip \
+       build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Maven 3.9.x
@@ -50,10 +51,11 @@ RUN mkdir -p ${MAVEN_HOME} \
 
 # Install Docker CLI (for Docker-in-Docker via socket mapping)
 RUN install -m 0755 -d /etc/apt/keyrings \
-    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /tmp/docker.gpg \
+    && gpg --dearmor -o /etc/apt/keyrings/docker.gpg < /tmp/docker.gpg \
+    && rm /tmp/docker.gpg \
     && chmod a+r /etc/apt/keyrings/docker.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-       $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu jammy stable" > /etc/apt/sources.list.d/docker.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends docker-ce-cli docker-buildx-plugin \
     && rm -rf /var/lib/apt/lists/* \
@@ -61,16 +63,12 @@ RUN install -m 0755 -d /etc/apt/keyrings \
 
 # Install Azure CLI
 RUN curl -sL https://aka.ms/InstallAzureCLIDeb | bash \
+    && rm -rf /var/lib/apt/lists/* \
     && az version
 
-# Install kubectl for AKS deployments
-RUN curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg \
-    && chmod 644 /etc/apt/keyrings/kubernetes-apt-keyring.gpg \
-    && echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /' | tee /etc/apt/sources.list.d/kubernetes.list \
-    && chmod 644 /etc/apt/sources.list.d/kubernetes.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends kubectl \
-    && rm -rf /var/lib/apt/lists/* \
+# Install kubectl for AKS deployments (using direct binary download for reliability)
+RUN curl -fsSL "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /usr/local/bin/kubectl \
+    && chmod +x /usr/local/bin/kubectl \
     && kubectl version --client
 
 # Install Helm for Kubernetes package management
