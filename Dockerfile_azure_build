@@ -16,23 +16,31 @@ LABEL description="Azure DevOps build container with Java 21, Maven, Docker CLI,
 # Avoid prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Fix potential apt repository issues and install dependencies
-RUN rm -rf /var/lib/apt/lists/* \
-    && apt-get clean \
-    && apt-get update --fix-missing \
-    && apt-get install -y --no-install-recommends \
-       ca-certificates \
-       curl \
-       wget \
-       gnupg \
-       lsb-release \
-       software-properties-common \
-       apt-transport-https \
-       git \
-       jq \
-       unzip \
-       zip \
-       build-essential \
+# Switch to more reliable HTTPS mirrors and install dependencies
+# Using mirrors.ubuntu.com which redirects to geographically close mirrors
+RUN set -eux; \
+    # Backup original sources.list
+    cp /etc/apt/sources.list /etc/apt/sources.list.bak || true; \
+    # Replace with HTTPS mirrors (more reliable in cloud environments)
+    echo "deb https://mirrors.edge.kernel.org/ubuntu/ jammy main restricted universe multiverse" > /etc/apt/sources.list; \
+    echo "deb https://mirrors.edge.kernel.org/ubuntu/ jammy-updates main restricted universe multiverse" >> /etc/apt/sources.list; \
+    echo "deb https://mirrors.edge.kernel.org/ubuntu/ jammy-backports main restricted universe multiverse" >> /etc/apt/sources.list; \
+    echo "deb https://mirrors.edge.kernel.org/ubuntu/ jammy-security main restricted universe multiverse" >> /etc/apt/sources.list; \
+    # Clean and update with retries
+    rm -rf /var/lib/apt/lists/*; \
+    apt-get clean; \
+    for i in 1 2 3; do \
+        apt-get update && break || { echo "Retry $i..."; sleep 5; }; \
+    done; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        wget \
+        gnupg \
+        git \
+        jq \
+        unzip \
+        zip \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Maven 3.9.x
@@ -50,21 +58,30 @@ RUN mkdir -p ${MAVEN_HOME} \
     && mvn --version
 
 # Install Docker CLI (for Docker-in-Docker via socket mapping)
-RUN install -m 0755 -d /etc/apt/keyrings \
-    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /tmp/docker.gpg \
-    && gpg --dearmor -o /etc/apt/keyrings/docker.gpg < /tmp/docker.gpg \
-    && rm /tmp/docker.gpg \
-    && chmod a+r /etc/apt/keyrings/docker.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu jammy stable" > /etc/apt/sources.list.d/docker.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends docker-ce-cli docker-buildx-plugin \
-    && rm -rf /var/lib/apt/lists/* \
-    && docker --version
+RUN set -eux; \
+    install -m 0755 -d /etc/apt/keyrings; \
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /tmp/docker.gpg; \
+    gpg --dearmor -o /etc/apt/keyrings/docker.gpg < /tmp/docker.gpg; \
+    rm /tmp/docker.gpg; \
+    chmod a+r /etc/apt/keyrings/docker.gpg; \
+    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu jammy stable" > /etc/apt/sources.list.d/docker.list; \
+    for i in 1 2 3; do apt-get update && break || { echo "Retry $i..."; sleep 5; }; done; \
+    apt-get install -y --no-install-recommends docker-ce-cli docker-buildx-plugin; \
+    rm -rf /var/lib/apt/lists/*; \
+    docker --version
 
-# Install Azure CLI
-RUN curl -sL https://aka.ms/InstallAzureCLIDeb | bash \
-    && rm -rf /var/lib/apt/lists/* \
-    && az version
+# Install Azure CLI (download and install directly, bypassing apt mirrors)
+RUN set -eux; \
+    # Install Azure CLI using Microsoft's install script with apt retries
+    for i in 1 2 3; do \
+        curl -sL https://aka.ms/InstallAzureCLIDeb | bash && break || { \
+            echo "Azure CLI install attempt $i failed, retrying..."; \
+            rm -rf /var/lib/apt/lists/*; \
+            sleep 10; \
+        }; \
+    done; \
+    rm -rf /var/lib/apt/lists/*; \
+    az version
 
 # Install kubectl for AKS deployments (using direct binary download for reliability)
 RUN curl -fsSL "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /usr/local/bin/kubectl \
