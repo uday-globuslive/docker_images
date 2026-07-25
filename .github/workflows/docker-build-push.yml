@@ -142,7 +142,9 @@ jobs:
         shell: powershell
         run: |
           $folder = "${{ matrix.folder }}"
-          $tags   = "${{ steps.meta.outputs.tags }}" -split "`n" | Where-Object { $_ -ne "" }
+          $tags   = "${{ steps.meta.outputs.tags }}" -split "`n" |
+                    ForEach-Object { $_.Trim() } |
+                    Where-Object { $_ -ne "" }
 
           $tagArgs = $tags | ForEach-Object { "-t", $_ } | ForEach-Object { $_ }
           Write-Host "Building $folder → $($tags -join ', ')"
