@@ -103,6 +103,40 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Start Docker daemon (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          # GitHub-hosted Windows runners have Docker Engine installed but
+          # the Windows-container daemon service is stopped by default.
+          $svc = Get-Service -Name docker -ErrorAction SilentlyContinue
+          if ($null -eq $svc) {
+            throw "Docker service not found — Windows container support may not be installed on this runner."
+          }
+          if ($svc.Status -ne 'Running') {
+            Write-Host "Starting Docker service..."
+            Start-Service docker
+          }
+          # Wait up to 60 s for the Windows-container daemon named pipe
+          $deadline = (Get-Date).AddSeconds(60)
+          while (-not (Test-Path '\\.\pipe\docker_engine')) {
+            if ((Get-Date) -gt $deadline) {
+              throw "Timed out waiting for Docker daemon (\\.\pipe\docker_engine)"
+            }
+            Write-Host "Waiting for Docker daemon..."
+            Start-Sleep -Seconds 3
+          }
+          # Verify with the installed Docker Engine, not the legacy System32 stub
+          $dockerBin = (Get-Command docker -All |
+                        Where-Object { $_.Source -notlike '*System32*' } |
+                        Select-Object -First 1).Source
+          if ($dockerBin) {
+            Write-Host "Using Docker at: $dockerBin"
+            & $dockerBin info
+          } else {
+            docker info
+          }
+
       - name: Set up Docker Buildx
         if: runner.os != 'Windows'
         uses: docker/setup-buildx-action@v3
@@ -141,19 +175,26 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: |
+          # Prefer the installed Docker Engine over the legacy System32 stub
+          $dockerBin = (Get-Command docker -All |
+                        Where-Object { $_.Source -notlike '*System32*' } |
+                        Select-Object -First 1).Source
+          if (-not $dockerBin) { $dockerBin = "docker" }
+          Write-Host "Docker binary: $dockerBin"
+
           $folder = "${{ matrix.folder }}"
           $tags   = "${{ steps.meta.outputs.tags }}" -split "`n" |
                     ForEach-Object { $_.Trim() } |
                     Where-Object { $_ -ne "" }
 
-          $tagArgs = $tags | ForEach-Object { "-t", $_ } | ForEach-Object { $_ }
+          $tagArgs = $tags | ForEach-Object { @("-t", $_) } | ForEach-Object { $_ }
           Write-Host "Building $folder → $($tags -join ', ')"
-          docker build @tagArgs $folder
+          & $dockerBin build @tagArgs $folder
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           foreach ($tag in $tags) {
             Write-Host "Pushing $tag"
-            docker push $tag
+            & $dockerBin push $tag
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
