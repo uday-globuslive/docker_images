@@ -2,7 +2,7 @@
 # Pre-installed: Java 21, Maven 3.9.x, Docker CLI, Azure CLI, Git
 # Usage: Build and push to your container registry, then reference in pipeline
 #
-# Build:  docker build -t <your-registry>/azure-build:java21 .
+# Build:  docker build -t <your-registry>/azure-build:java21 -f Dockerfile_azure_build .
 # Push:   docker push <your-registry>/azure-build:java21
 #
 # Pipeline usage:
@@ -83,6 +83,19 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     az version
 
+# Install Google Chrome (official Google repository)
+RUN set -eux; \
+    install -m 0755 -d /etc/apt/keyrings; \
+    curl -fsSL https://dl.google.com/linux/linux_signing_key.pub -o /tmp/google-linux-signing-key.pub; \
+    gpg --dearmor -o /etc/apt/keyrings/google-chrome.gpg < /tmp/google-linux-signing-key.pub; \
+    rm /tmp/google-linux-signing-key.pub; \
+    chmod a+r /etc/apt/keyrings/google-chrome.gpg; \
+    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list; \
+    for i in 1 2 3; do apt-get update && break || { echo "Retry $i..."; sleep 5; }; done; \
+    apt-get install -y --no-install-recommends google-chrome-stable; \
+    rm -rf /var/lib/apt/lists/*; \
+    google-chrome --version
+
 # Install kubectl for AKS deployments (using direct binary download for reliability)
 RUN curl -fsSL "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /usr/local/bin/kubectl \
     && chmod +x /usr/local/bin/kubectl \
@@ -109,6 +122,7 @@ RUN echo "=== Build Container Tool Versions ===" \
     && echo "" && echo "Maven:" && mvn -version \
     && echo "" && echo "Docker CLI:" && docker --version \
     && echo "" && echo "Azure CLI:" && az version \
+    && echo "" && echo "Google Chrome:" && google-chrome --version \
     && echo "" && echo "kubectl:" && kubectl version --client \
     && echo "" && echo "Helm:" && helm version \
     && echo "" && echo "Git:" && git --version
