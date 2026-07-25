@@ -1,6 +1,6 @@
 # Docker Images
 
-This repository contains Dockerfiles organized in per-image folders.
+This repository contains Dockerfiles organized by runner OS.
 A GitHub Actions workflow automatically builds and pushes an image to Docker Hub
 **whenever its folder changes** on the `main` branch.
 
@@ -12,31 +12,39 @@ A GitHub Actions workflow automatically builds and pushes an image to Docker Hub
 docker_images/
 ├── .github/
 │   └── workflows/
-│       └── docker-build-push.yml   ← automated CI/CD
-├── azure-build/
-│   └── Dockerfile                  ← Java 21 + Maven + Azure CLI + kubectl + Helm
-├── <next-image>/
-│   └── Dockerfile                  ← add new images here
+│       └── docker-build-push.yml        ← automated CI/CD
+├── linux/                               ← built on ubuntu-latest
+│   └── azure-build/
+│       └── Dockerfile                   ← Java 21 + Maven + Azure CLI + kubectl + Helm
+├── windows/                             ← built on windows-2025
+│   └── azure-windows-build/
+│       └── Dockerfile                   ← Java 21 + Maven + Azure CLI + kubectl + Helm (Windows)
 └── README.md
 ```
 
-### Naming convention
+### Runner mapping
 
-| Folder name | Docker Hub image |
+| Top-level folder | GitHub Actions runner |
+|------------------|-----------------------|
+| `linux/`         | `ubuntu-latest`       |
+| `windows/`       | `windows-2025`        |
+
+### Docker Hub image naming
+
+The **second-level folder name** becomes the Docker Hub repository name.
+
+| Folder path | Docker Hub image |
 |-------------|-----------------|
-| `azure-build` | `<DOCKERHUB_USERNAME>/azure-build` |
-| `node-build`  | `<DOCKERHUB_USERNAME>/node-build`  |
-| `python-build`| `<DOCKERHUB_USERNAME>/python-build`|
-
-The folder name becomes the Docker Hub repository name automatically.
+| `linux/azure-build` | `<DOCKERHUB_USERNAME>/azure-build` |
+| `windows/azure-windows-build` | `<DOCKERHUB_USERNAME>/azure-windows-build` |
 
 ---
 
 ## How the Workflow Works
 
-1. You push a change to `main` that modifies one or more `Dockerfile` files.
-2. The `detect-changes` job diffs `HEAD~1..HEAD` to find which **folders** contain changed Dockerfiles.
-3. A parallel matrix job runs **only** for those folders — builds the image and pushes two tags:
+1. You push a change to `main` that modifies a `Dockerfile` under `linux/` or `windows/`.
+2. The `detect-changes` job diffs `HEAD~1..HEAD`, extracts changed folders, and builds a matrix of `{ folder, runner, image }` entries.
+3. A parallel matrix job runs **only** for those folders on the correct runner — builds the image and pushes two tags:
    - `:latest`
    - `:<short-sha>` (e.g. `:a1b2c3d`) for traceability
 
@@ -57,22 +65,32 @@ In your GitHub repository go to **Settings → Secrets and variables → Actions
 
 ### 2 — Push to `main`
 
-Any push that modifies a `Dockerfile` inside a first-level folder triggers the workflow automatically.
+Any push that modifies a `Dockerfile` inside `linux/` or `windows/` triggers the workflow automatically.
 
 ### 3 — Manual trigger (optional)
 
 Run the workflow from **Actions → Build and Push Docker Images → Run workflow**.
 
 - Leave *folder* empty to build **all** images.
-- Enter a folder name (e.g. `azure-build`) to build only that image.
+- Enter a folder path (e.g. `linux/azure-build` or `windows/azure-windows-build`) to build only that image.
 
 ---
 
 ## Adding a New Image
 
-1. Create a new folder: `mkdir my-new-image`
-2. Add a `Dockerfile` inside it.
-3. Commit and push to `main`.
+**Linux image:**
+```
+mkdir -p linux/my-new-image
+# add linux/my-new-image/Dockerfile
+git add . && git commit -m "add my-new-image" && git push
+```
+
+**Windows image:**
+```
+mkdir -p windows/my-new-image
+# add windows/my-new-image/Dockerfile
+git add . && git commit -m "add my-new-image" && git push
+```
 
 The workflow picks it up automatically — no changes to the workflow file needed.
 
@@ -80,9 +98,9 @@ The workflow picks it up automatically — no changes to the workflow file neede
 
 ## Images
 
-### `azure-build`
+### `linux/azure-build`
 
-Azure DevOps build container for erwin-DM-Cloud backend services.
+Azure DevOps build container for erwin-DM-Cloud backend services (Linux).
 
 | Tool | Version |
 |------|---------|
@@ -94,20 +112,19 @@ Azure DevOps build container for erwin-DM-Cloud backend services.
 | Helm | Latest |
 | Git | Latest |
 
-The image will be pushed to: `<your-username>/azure-build:java21`
+### `windows/azure-windows-build`
 
-#### Option 2: Build Locally
+Azure DevOps build container for erwin-DM-Cloud backend services (Windows Server Core ltsc2025).
 
-```bash
-# From repository root
-cd azure-devops/docker
-
-# Build locally
-docker build -t azure-build:java21 -f Dockerfile_azure_build .
-
-# Build and push to ACR
-docker build -t <your-acr>.azurecr.io/azure-build:java21 -f Dockerfile_azure_build .
-az acr login --name <your-acr>
+| Tool | Version |
+|------|---------|
+| Java (Eclipse Temurin) | 21 |
+| Maven | 3.9.9 |
+| Docker CLI | Latest |
+| Azure CLI | Latest |
+| kubectl | 1.31.x |
+| Helm | Latest |
+| Git | Latest |
 docker push <your-acr>.azurecr.io/azure-build:java21
 ```
 
