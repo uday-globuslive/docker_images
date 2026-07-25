@@ -111,7 +111,7 @@ jobs:
           # the Windows-container daemon service is stopped by default.
           $svc = Get-Service -Name docker -ErrorAction SilentlyContinue
           if ($null -eq $svc) {
-            throw "Docker service not found — Windows container support may not be installed on this runner."
+            throw "Docker service not found - Windows container support may not be installed on this runner."
           }
           if ($svc.Status -ne 'Running') {
             Write-Host "Starting Docker service..."
