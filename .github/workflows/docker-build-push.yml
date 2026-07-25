@@ -80,13 +80,14 @@ jobs:
             os_group=$(echo "$folder" | cut -d/ -f1)   # linux | windows
             image=$(echo "$folder" | cut -d/ -f2)       # azure-build | azure-windows-build
             runner=$(runner_for "$os_group")
-            INCLUDES=$(echo "$INCLUDES" | jq \
+            INCLUDES=$(echo "$INCLUDES" | jq -c \
               --arg f "$folder" --arg r "$runner" --arg i "$image" \
               '. += [{"folder": $f, "runner": $r, "image": $i}]')
           done <<< "$FOLDERS_LIST"
 
+          MATRIX=$(jq -cn --argjson inc "$INCLUDES" '{"include": $inc}')
           echo "has_changes=true" >> "$GITHUB_OUTPUT"
-          echo "matrix={\"include\":$INCLUDES}" >> "$GITHUB_OUTPUT"
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
 
   # ── Step 2: Build & push each changed image in parallel ───────────────────
   build-and-push:
