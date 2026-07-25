@@ -5,12 +5,14 @@ on:
     branches:
       - main
     paths:
-      - '**/Dockerfile'
-      - '**/Dockerfile.*'
+      - 'linux/**/Dockerfile'
+      - 'linux/**/Dockerfile.*'
+      - 'windows/**/Dockerfile'
+      - 'windows/**/Dockerfile.*'
   workflow_dispatch:
     inputs:
       folder:
-        description: 'Image folder to build (e.g. azure-build). Leave empty to build ALL images.'
+        description: 'Image folder to build (e.g. linux/azure-build or windows/azure-windows-build). Leave empty to build ALL images.'
         required: false
         default: ''
 
@@ -34,46 +36,64 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Runner mapping: top-level folder name → GitHub Actions runner label
+          runner_for() {
+            case "$1" in
+              linux)   echo "ubuntu-latest" ;;
+              windows) echo "windows-2025"  ;;
+              *)        echo "ubuntu-latest" ;;
+            esac
+          }
+
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             INPUT_FOLDER="${{ github.event.inputs.folder }}"
             if [[ -n "$INPUT_FOLDER" ]]; then
-              # Build only the requested folder
-              FOLDERS="[\"$INPUT_FOLDER\"]"
+              # e.g. "linux/azure-build"  →  treat as single entry
+              FOLDERS_LIST="$INPUT_FOLDER"
             else
-              # No folder specified → build ALL folders that contain a Dockerfile
-              FOLDERS=$(find . -name 'Dockerfile*' \
-                          -not -path './.github/*' \
-                          -not -path './.*' \
-                        | xargs -I{} dirname {} \
-                        | sed 's|^\./||' \
-                        | sort -u \
-                        | jq -R . | jq -sc .)
+              # Build ALL image folders (linux/* and windows/*)
+              FOLDERS_LIST=$(find linux windows -name 'Dockerfile*' 2>/dev/null \
+                              | xargs -I{} dirname {} \
+                              | sort -u)
             fi
           else
-            # Push event: detect only the folders whose Dockerfiles changed
-            FOLDERS=$(git diff --name-only HEAD~1 HEAD \
-                      | grep -E '^[^/]+/Dockerfile' \
-                      | xargs -I{} dirname {} \
-                      | sort -u \
-                      | jq -R . | jq -sc .)
+            # Push event: detect only changed Dockerfile folders
+            FOLDERS_LIST=$(git diff --name-only HEAD~1 HEAD \
+                          | grep -E '^(linux|windows)/[^/]+/Dockerfile' \
+                          | xargs -I{} dirname {} \
+                          | sort -u)
           fi
 
-          echo "Folders to build: $FOLDERS"
+          echo "Folders to build: $FOLDERS_LIST"
 
-          if [[ "$FOLDERS" == "[]" || -z "$FOLDERS" ]]; then
+          if [[ -z "$FOLDERS_LIST" ]]; then
             echo "has_changes=false" >> "$GITHUB_OUTPUT"
-            echo "matrix={\"folder\":[]}" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-            echo "matrix={\"folder\":$FOLDERS}" >> "$GITHUB_OUTPUT"
+            echo "matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          # Build include array — each entry: { folder, runner, image }
+          # folder = linux/azure-build   runner = ubuntu-latest   image = azure-build
+          INCLUDES='[]'
+          while IFS= read -r folder; do
+            [[ -z "$folder" ]] && continue
+            os_group=$(echo "$folder" | cut -d/ -f1)   # linux | windows
+            image=$(echo "$folder" | cut -d/ -f2)       # azure-build | azure-windows-build
+            runner=$(runner_for "$os_group")
+            INCLUDES=$(echo "$INCLUDES" | jq \
+              --arg f "$folder" --arg r "$runner" --arg i "$image" \
+              '. += [{"folder": $f, "runner": $r, "image": $i}]')
+          done <<< "$FOLDERS_LIST"
+
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          echo "matrix={\"include\":$INCLUDES}" >> "$GITHUB_OUTPUT"
 
   # ── Step 2: Build & push each changed image in parallel ───────────────────
   build-and-push:
-    name: Build & Push → ${{ matrix.folder }}
+    name: Build & Push → ${{ matrix.image }}
     needs: detect-changes
     if: needs.detect-changes.outputs.has_changes == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       matrix: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
       fail-fast: false   # keep building other images even if one fails
@@ -82,7 +102,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Switch Docker to Windows containers
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          & "$env:ProgramFiles\Docker\Docker\DockerCli.exe" -SwitchDaemon
+          Start-Sleep -Seconds 15
+          docker info
+
       - name: Set up Docker Buildx
+        if: runner.os != 'Windows'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
@@ -95,16 +124,16 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          # Image name = DOCKERHUB_USERNAME/<folder-name>
-          # e.g.  myorg/azure-build
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.folder }}
+          # Docker Hub image = DOCKERHUB_USERNAME/<image-name>  e.g. myorg/azure-build
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}
           tags: |
-            # Always tag :latest on pushes to main
+            # :latest on pushes to main
             type=raw,value=latest,enable={{is_default_branch}}
-            # Short SHA tag for traceability  e.g. :a1b2c3d
+            # :a1b2c3d short SHA for traceability
             type=sha,prefix=,format=short
 
-      - name: Build and push Docker image
+      - name: Build and push (Linux)
+        if: runner.os != 'Windows'
         uses: docker/build-push-action@v6
         with:
           context: ./${{ matrix.folder }}
@@ -112,9 +141,27 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # GitHub Actions cache speeds up repeated builds significantly
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Build and push (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $folder = "${{ matrix.folder }}"
+          $tags   = "${{ steps.meta.outputs.tags }}" -split "`n" | Where-Object { $_ -ne "" }
+
+          $tagArgs = $tags | ForEach-Object { "-t", $_ } | ForEach-Object { $_ }
+          Write-Host "Building $folder → $($tags -join ', ')"
+          docker build @tagArgs $folder
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          foreach ($tag in $tags) {
+            Write-Host "Pushing $tag"
+            docker push $tag
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
       - name: Image digest
-        run: echo "Pushed ${{ matrix.folder }} → ${{ steps.meta.outputs.tags }}"
+        shell: bash
+        run: echo "Pushed ${{ matrix.image }} (${{ matrix.runner }})"
