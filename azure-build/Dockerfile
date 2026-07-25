@@ -2,7 +2,7 @@
 # Pre-installed: Java 21, Maven 3.9.x, Docker CLI, Azure CLI, Git
 # Usage: Build and push to your container registry, then reference in pipeline
 #
-# Build:  docker build -t <your-registry>/azure-build:java21 -f Dockerfile_azure_build .
+# Build:  docker build -t <your-registry>/azure-build:java21 .
 # Push:   docker push <your-registry>/azure-build:java21
 #
 # Pipeline usage:

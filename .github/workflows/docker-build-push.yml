@@ -1,0 +1,120 @@
+name: Build and Push Docker Images
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '**/Dockerfile'
+      - '**/Dockerfile.*'
+  workflow_dispatch:
+    inputs:
+      folder:
+        description: 'Image folder to build (e.g. azure-build). Leave empty to build ALL images.'
+        required: false
+        default: ''
+
+jobs:
+  # ── Step 1: Detect which image folders changed ─────────────────────────────
+  detect-changes:
+    name: Detect Changed Image Folders
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      has_changes: ${{ steps.set-matrix.outputs.has_changes }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2  # needed so we can diff HEAD~1
+
+      - name: Detect changed image folders
+        id: set-matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            INPUT_FOLDER="${{ github.event.inputs.folder }}"
+            if [[ -n "$INPUT_FOLDER" ]]; then
+              # Build only the requested folder
+              FOLDERS="[\"$INPUT_FOLDER\"]"
+            else
+              # No folder specified → build ALL folders that contain a Dockerfile
+              FOLDERS=$(find . -name 'Dockerfile*' \
+                          -not -path './.github/*' \
+                          -not -path './.*' \
+                        | xargs -I{} dirname {} \
+                        | sed 's|^\./||' \
+                        | sort -u \
+                        | jq -R . | jq -sc .)
+            fi
+          else
+            # Push event: detect only the folders whose Dockerfiles changed
+            FOLDERS=$(git diff --name-only HEAD~1 HEAD \
+                      | grep -E '^[^/]+/Dockerfile' \
+                      | xargs -I{} dirname {} \
+                      | sort -u \
+                      | jq -R . | jq -sc .)
+          fi
+
+          echo "Folders to build: $FOLDERS"
+
+          if [[ "$FOLDERS" == "[]" || -z "$FOLDERS" ]]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "matrix={\"folder\":[]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "matrix={\"folder\":$FOLDERS}" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── Step 2: Build & push each changed image in parallel ───────────────────
+  build-and-push:
+    name: Build & Push → ${{ matrix.folder }}
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+      fail-fast: false   # keep building other images even if one fails
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract image metadata (tags & labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # Image name = DOCKERHUB_USERNAME/<folder-name>
+          # e.g.  myorg/azure-build
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.folder }}
+          tags: |
+            # Always tag :latest on pushes to main
+            type=raw,value=latest,enable={{is_default_branch}}
+            # Short SHA tag for traceability  e.g. :a1b2c3d
+            type=sha,prefix=,format=short
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.folder }}
+          file: ./${{ matrix.folder }}/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # GitHub Actions cache speeds up repeated builds significantly
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Image digest
+        run: echo "Pushed ${{ matrix.folder }} → ${{ steps.meta.outputs.tags }}"
